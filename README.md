@@ -8,7 +8,15 @@ self-contained `EasySslInstaller.exe`. Works on any Windows or Windows Server wi
 
 ## What it does
 
-- Lists every HTTPS binding (site, IP:port:host, SNI, bound certificate, expiry, days left).
+- Lists every IIS site with all its http and https bindings: site state, host name, bound certificate, expiry, days
+  left and an SSL status per row: valid, N days left, expired, certificate missing, host name not covered by the
+  certificate, or no HTTPS at all. The status bar sums it up (sites, host names, problem bindings, hosts without HTTPS)
+  and a filter box narrows the list.
+- Matches every host name against the certificates in the store and shows the best one (covers the name, has a private
+  key, longest validity) in the "Suggested certificate" column. "Apply all suggestions" assigns them in one go; the
+  context menu does it per binding, or adds an https binding (SNI, port 443) to a host that only has http.
+- "Live SSL check" connects to each https binding from the server itself, with SNI, and reports whether the
+  certificate actually served is the one IIS has configured.
 - Lists the certificates in `LocalMachine\My` with SAN names, expiry, days left and whether a private key is present.
   Rows turn yellow under 30 days and red when expired.
 - Imports a PFX / P12 file with its password.
@@ -67,7 +75,12 @@ binding'leri yeni sertifikaya geçiren küçük bir araç. Kurulum yok; tek bir 
   dosyalarını içeriğinden tanıyarak alır. ZIP'te anahtar yoksa "Anahtar (.key)" alanındaki dosya kullanılır.
 - Her yüklemeden sonra yeni sertifikaya uyan binding'leri bulur (SAN'daki alan adları ya da aynı alan adları için
   verilmiş eski sertifikayı kullanan binding'ler), listeler ve tek onayla hepsine atar.
-- Üstte binding'ler, altta sertifikalar; 30 günden az kalanlar sarı, süresi dolanlar kırmızı.
+- Üst liste IIS'teki tüm siteleri http ve https binding'leriyle gösterir; her satırda SSL durumu (geçerli, N gün
+  kaldı, süresi dolmuş, sertifika yok, alan adı uyuşmuyor, HTTPS yok) ve depodan önerilen sertifika vardır.
+  "Tüm önerileri uygula" hepsini tek seferde atar; sağ tık ile tek binding'e atanır ya da yalnızca http'si olan
+  alan adına https binding eklenir. "SSL'i canlı sorgula" her binding'e bağlanıp gerçekten sunulan sertifikayı
+  IIS'teki ile karşılaştırır.
+- Altta sertifikalar; 30 günden az kalanlar sarı, süresi dolanlar kırmızı. Durum çubuğunda özet ve süzgeç kutusu var.
 - Birden fazla binding seçip tek seferde yeni sertifikayı elle de atayabilirsiniz.
 - Sağ tık: thumbprint kopyala, sertifikayı sil (bir binding kullanıyorsa silmez).
 - Her işlem alttaki kayıt paneline ve exe'nin yanındaki `EasySslInstaller.log` dosyasına yazılır.
