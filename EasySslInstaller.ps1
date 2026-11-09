@@ -1,11 +1,12 @@
 ﻿#Requires -Version 5.1
 # Easy SSL Installer for IIS - tek dosya PowerShell/WinForms uygulaması
 # https://github.com/softviser/easy-ssl-installer-iis
-# Yapar: https binding'leri ve LocalMachine\My sertifikalarını listeler, PFX veya PEM bundle
-#        (crt + key + ca-bundle) yükler, seçili binding'lere sertifika atar, kullanılmayan sertifikayı siler.
+# Yapar: https binding'leri ve LocalMachine\My sertifikalarını listeler; PFX, PEM bundle (crt + key + ca-bundle)
+#        veya sertifika sağlayıcısından gelen ZIP'i yükler; yükleme sonrası alan adı uyan binding'lere atamayı önerir;
+#        seçili binding'lere sertifika atar, kullanılmayan sertifikayı siler.
 #        Her işlem ekrandaki kayıt paneline ve uygulamanın yanındaki EasySslInstaller.log dosyasına yazılır.
 $ErrorActionPreference = 'Stop'
-$appName = 'Easy SSL Installer for IIS'; $appVersion = '1.1.0'
+$appName = 'Easy SSL Installer for IIS'; $appVersion = '1.2.0'
 $repoUrl = 'https://github.com/softviser/easy-ssl-installer-iis'; $siteUrl = 'https://www.softviser.com.tr'
 
 # Exe olarak derlenince $PSCommandPath boş gelir; o zaman kendi exe yolumuzu kullanırız.
@@ -99,6 +100,70 @@ function Import-PemBundle($crt, $key, $ca) {
     } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
+# Sağlayıcıdan gelen ZIP: içinde PFX varsa onu, yoksa sunucu sertifikası + anahtar + CA dosyalarını içeriğine bakarak ayırır.
+# shortcut: DER (ikili) sertifika ve anahtarla sertifikayı aynı dosyada taşıyan PEM tanınmaz, gerekirse elle PEM alanlarını kullanın
+function Import-Zip($zip, $pass, $keyFallback) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $tmp = Join-Path $env:TEMP ("EasySslZip_" + [guid]::NewGuid())
+    New-Item -ItemType Directory $tmp | Out-Null
+    try {
+        $z = [IO.Compression.ZipFile]::OpenRead($zip)
+        try { foreach ($e in $z.Entries) { if ($e.Name) { [IO.Compression.ZipFileExtensions]::ExtractToFile($e, (Join-Path $tmp $e.Name), $true) } } } finally { $z.Dispose() }
+        $files = @(Get-ChildItem $tmp -File)
+        Write-Log "ZIP  $zip  ->  $($files.Name -join ', ')"
+        $pfx = $files | Where-Object { $_.Extension -in '.pfx', '.p12' } | Select-Object -First 1
+        if ($pfx) { return Import-Pfx $pfx.FullName $pass }
+        $key = $null; $leaf = $null; $ca = @()
+        foreach ($f in $files) {
+            $txt = Get-Content $f.FullName -Raw -ErrorAction SilentlyContinue
+            if ($txt -match 'PRIVATE KEY-----') { if (-not $key) { $key = $f.FullName }; continue }
+            $n = ([regex]::Matches([string]$txt, '-----BEGIN CERTIFICATE-----')).Count
+            if ($n -eq 0) { continue }
+            if ($n -eq 1 -and -not $leaf) {
+                $c = New-Object Security.Cryptography.X509Certificates.X509Certificate2 $f.FullName
+                $isCa = @($c.Extensions | Where-Object { $_ -is [Security.Cryptography.X509Certificates.X509BasicConstraintsExtension] -and $_.CertificateAuthority }).Count
+                if (-not $isCa) { $leaf = $f.FullName; continue }
+            }
+            $ca += $f.FullName
+        }
+        if (-not $key) { $key = $keyFallback }
+        if (-not $leaf) { throw 'ZIP içinde sunucu sertifikası (PEM) veya PFX bulunamadı.' }
+        if (-not $key) { throw "ZIP içinde özel anahtar yok. 'Anahtar (.key)' alanına anahtar dosyasını verip tekrar deneyin." }
+        $caFile = $null
+        if ($ca) { $caFile = Join-Path $tmp 'ca-bundle.crt'; (($ca | ForEach-Object { (Get-Content $_ -Raw).Trim() }) -join "`n") | Set-Content $caFile -Encoding Ascii }
+        Import-PemBundle $leaf $key $caFile
+    } finally { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# Alan adı sertifikanın SAN listesine uyar mı (joker tek seviye)?
+function Match-Host($names, $h) {
+    if (-not $h) { return $false }
+    foreach ($n in $names) {
+        if ($h -eq $n) { return $true }
+        if ($n.StartsWith('*.') -and $h -like $n -and $h.Split('.').Count -eq $n.Split('.').Count) { return $true }
+    }
+    $false
+}
+# Yeni sertifikaya uyan binding'ler: alan adı SAN'da olan ya da aynı alan adları için verilmiş eski sertifikayı kullanan (yenileme).
+function Find-MatchingBindings($cert) {
+    $names = @($cert.DnsNameList | ForEach-Object Unicode)
+    foreach ($r in @(Get-Bindings)) {
+        if ($r.Thumbprint -eq $cert.Thumbprint) { continue }
+        $old = if ($r.Thumbprint) { Get-Item "Cert:\LocalMachine\My\$($r.Thumbprint)" -ErrorAction SilentlyContinue }
+        $renew = $old -and @($old.DnsNameList | ForEach-Object Unicode | Where-Object { $names -contains $_ }).Count
+        if ($renew -or (Match-Host $names ($r.Binding -split ':')[2])) { $r }
+    }
+}
+function Auto-Assign($cert) {
+    $hits = @(Find-MatchingBindings $cert)
+    if (-not $hits) { Write-Log 'OTOMATİK ATAMA  uyan binding yok'; return }
+    $lines = $hits | ForEach-Object { "$($_.Site) [$($_.Binding)]" + $(if ($_.Sertifika) { "  (şu an: $($_.Sertifika), bitiş $($_.Bitis))" } else { '  (sertifikasız)' }) }
+    $q = "Yeni sertifika şu binding'lere uyuyor:`n`n$($lines -join "`n")`n`n-> $($cert.Subject)`n   bitiş $($cert.NotAfter.ToString('yyyy-MM-dd'))`n`nHepsine atansın mı?"
+    if ([Windows.Forms.MessageBox]::Show($q, 'Otomatik atama', 'YesNo', 'Question') -ne 'Yes') { Write-Log 'OTOMATİK ATAMA  kullanıcı iptal etti'; return }
+    foreach ($r in $hits) { Set-BindingCert $r.Site $r.Binding $r.Thumbprint $cert.Thumbprint }
+    Refresh-All
+}
+
 function Remove-Cert($thumb, $subject) {
     Remove-Item "Cert:\LocalMachine\My\$thumb" -DeleteKey
     Write-Log "SİLME  $subject  $thumb  (özel anahtarla birlikte)"
@@ -177,6 +242,11 @@ function Select-Cert($thumb) {
         if ($r.Cells['Thumbprint'].Value -eq $thumb) { $gridC.ClearSelection(); $r.Selected = $true; $gridC.FirstDisplayedScrollingRowIndex = $r.Index; return }
     }
 }
+# Her yüklemeden sonra: alanları temizle, listeyi yenile, yeni sertifikayı seç, uyan binding'lere atamayı öner.
+function After-Import($cert, $boxes) {
+    foreach ($b in $boxes) { $b.Text = '' }
+    Refresh-All; Select-Cert $cert.Thumbprint; Auto-Assign $cert
+}
 function Show-About {
     $f = New-Object Windows.Forms.Form; $f.Text = 'Hakkında'; $f.ClientSize = '420,230'; $f.StartPosition = 'CenterParent'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.ShowInTaskbar = $false; $f.Icon = $form.Icon
@@ -185,7 +255,7 @@ function Show-About {
     $t = New-Object Windows.Forms.Label; $t.Text = $appName; $t.Font = New-Object Drawing.Font('Segoe UI', 14, [Drawing.FontStyle]::Bold); $t.Location = '80,18'; $t.AutoSize = $true
     $v = New-Object Windows.Forms.Label; $v.Text = "Sürüm $appVersion  -  MIT lisansı, açık kaynak"; $v.Location = '82,50'; $v.AutoSize = $true
     $d = New-Object Windows.Forms.Label; $d.Location = '20,85'; $d.Size = '380,40'
-    $d.Text = "IIS için SSL sertifikası yükleme ve binding güncelleme aracı. PFX ve PEM bundle (crt + key + ca-bundle) destekler."
+    $d.Text = "IIS için SSL sertifikası yükleme ve binding güncelleme aracı. PFX, PEM bundle (crt + key + ca-bundle) ve sağlayıcı ZIP'i destekler."
     $by = New-Object Windows.Forms.Label; $by.Text = 'Softviser Yazılım'; $by.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold); $by.Location = '20,135'; $by.AutoSize = $true
     $l1 = New-Object Windows.Forms.LinkLabel; $l1.Text = 'www.softviser.com.tr'; $l1.Location = '20,155'; $l1.AutoSize = $true; $l1.Tag = $siteUrl
     $l2 = New-Object Windows.Forms.LinkLabel; $l2.Text = 'github.com/softviser/easy-ssl-installer-iis'; $l2.Location = '20,175'; $l2.AutoSize = $true; $l2.Tag = $repoUrl
@@ -197,7 +267,7 @@ function Show-About {
 
 # ---------- form ----------
 $form = New-Object Windows.Forms.Form
-$form.Text = "$appName - $env:COMPUTERNAME"; $form.Size = '1000,840'; $form.StartPosition = 'CenterScreen'; $form.MinimumSize = '800,600'
+$form.Text = "$appName - $env:COMPUTERNAME"; $form.Size = '1000,870'; $form.StartPosition = 'CenterScreen'; $form.MinimumSize = '800,600'
 $ico = Join-Path (Split-Path $selfPath) 'EasySslInstaller.ico'
 if (-not $PSCommandPath) { $form.Icon = [Drawing.Icon]::ExtractAssociatedIcon($selfPath) } elseif (Test-Path $ico) { $form.Icon = New-Object Drawing.Icon $ico }
 $tip = New-Object Windows.Forms.ToolTip
@@ -217,14 +287,14 @@ $mFile = $menu.Items.Add('Dosya'); $mHelp = $menu.Items.Add('Yardım')
 $form.MainMenuStrip = $menu
 
 # yükleme paneli
-$load = New-Object Windows.Forms.GroupBox; $load.Text = 'Sertifika yükle (dosyaları sürükleyip bırakabilirsiniz)'; $load.Dock = 'Top'
-$load.Size = "$($form.ClientSize.Width),150"   # anchor'lar doğru hesaplansın diye çocuklardan önce genişlik verilir
+$load = New-Object Windows.Forms.GroupBox; $load.Text = 'Sertifika yükle (PFX, PEM dosyaları veya sağlayıcıdan gelen ZIP; dosyaları sürükleyip bırakabilirsiniz)'; $load.Dock = 'Top'
+$load.Size = "$($form.ClientSize.Width),180"   # anchor'lar doğru hesaplansın diye çocuklardan önce genişlik verilir
 $txtPfx = Add-FileRow $load 22  'PFX dosyası:'      'PFX|*.pfx;*.p12|Tümü|*.*'
 $txtPw  = New-Object Windows.Forms.TextBox; $txtPw.UseSystemPasswordChar = $true; $txtPw.Location = '790,22'; $txtPw.Width = 90; $txtPw.Anchor = 'Top,Right'
 $lblPw  = New-Object Windows.Forms.Label; $lblPw.Text = 'Şifre:'; $lblPw.Location = '745,26'; $lblPw.Width = 45; $lblPw.Anchor = 'Top,Right'
 $btnPfx = New-Button 'PFX Yükle' 886 21 95 {
     if (-not $txtPfx.Text) { throw 'PFX dosyası seçin.' }
-    $c = Import-Pfx $txtPfx.Text $txtPw.Text; $txtPw.Text = ''; $txtPfx.Text = ''; Refresh-All; Select-Cert $c.Thumbprint
+    $c = Import-Pfx $txtPfx.Text $txtPw.Text; After-Import $c @($txtPfx, $txtPw)
 }
 $btnPfx.Anchor = 'Top,Right'; $tip.SetToolTip($btnPfx, 'PFX/P12 dosyasını özel anahtarıyla birlikte LocalMachine\My deposuna alır')
 $txtCrt = Add-FileRow $load 55  'Sertifika (.crt):' 'Sertifika|*.crt;*.cer;*.pem|Tümü|*.*'
@@ -232,10 +302,16 @@ $txtKey = Add-FileRow $load 85  'Anahtar (.key):'   'Anahtar|*.key;*.pem|Tümü|
 $txtCa  = Add-FileRow $load 115 'CA bundle (ops.):' 'CA bundle|*.ca-bundle;*.crt;*.cer;*.pem|Tümü|*.*'
 $btnPem = New-Button 'PEM Bundle Yükle' 745 114 236 {
     if (-not $txtCrt.Text -or -not $txtKey.Text) { throw 'Sertifika (.crt) ve anahtar (.key) dosyalarını seçin.' }
-    $c = Import-PemBundle $txtCrt.Text $txtKey.Text $txtCa.Text; $txtCrt.Text = ''; $txtKey.Text = ''; $txtCa.Text = ''; Refresh-All; Select-Cert $c.Thumbprint
+    $c = Import-PemBundle $txtCrt.Text $txtKey.Text $txtCa.Text; After-Import $c @($txtCrt, $txtKey, $txtCa)
 }
 $btnPem.Anchor = 'Top,Right'; $tip.SetToolTip($btnPem, 'crt + key dosyasını certutil ile PFX''e çevirip yükler; CA bundle Intermediate CA deposuna gider')
-$load.Controls.AddRange(@($lblPw, $txtPw, $btnPfx, $btnPem))
+$txtZip = Add-FileRow $load 145 'ZIP bundle:'       'ZIP|*.zip|Tümü|*.*'
+$btnZip = New-Button 'ZIP Yükle' 745 144 236 {
+    if (-not $txtZip.Text) { throw 'ZIP dosyası seçin.' }
+    $c = Import-Zip $txtZip.Text $txtPw.Text $txtKey.Text; After-Import $c @($txtZip, $txtPw, $txtKey)
+}
+$btnZip.Anchor = 'Top,Right'; $tip.SetToolTip($btnZip, 'Sağlayıcının gönderdiği ZIP''i açar: içindeki PFX''i (şifre alanıyla) ya da crt + key + CA dosyalarını kendisi bulup yükler. ZIP''te anahtar yoksa Anahtar (.key) alanı kullanılır')
+$load.Controls.AddRange(@($lblPw, $txtPw, $btnPfx, $btnPem, $btnZip))
 
 # listeler
 $split = New-Object Windows.Forms.SplitContainer; $split.Dock = 'Fill'; $split.Orientation = 'Horizontal'

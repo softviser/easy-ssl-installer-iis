@@ -15,8 +15,15 @@ self-contained `EasySslInstaller.exe`. Works on any Windows or Windows Server wi
 - Imports a PEM bundle: certificate (.crt) + private key (.key) + optional CA bundle. The conversion to PFX is done
   with Windows' own `certutil`, so OpenSSL is not needed. The CA bundle goes into the Intermediate Certification
   Authorities store.
-- Assigns the selected certificate to one or more selected bindings. For a renewal: select every binding that uses the
-  old certificate, select the new one, assign.
+- Imports the ZIP file a certificate provider sends as is. It picks the PFX inside if there is one (password from the
+  password box), otherwise it tells the server certificate, the private key and the CA files apart by their content
+  (Sectigo/Comodo, GoDaddy, ZeroSSL and Let's Encrypt style layouts). If the ZIP has no key, the key file given in the
+  "Anahtar (.key)" field is used.
+- After every import it looks for bindings that match the new certificate: host names found in the certificate's SAN
+  list (wildcards match one level), or bindings that still use an older certificate issued for the same names. It
+  lists them and, after one confirmation, assigns the new certificate to all of them.
+- Assigns the selected certificate to one or more selected bindings by hand. For a renewal: select every binding that
+  uses the old certificate, select the new one, assign.
 - Right-click a certificate to copy its thumbprint or delete it (refused while a binding still uses it).
 - Logs every action (imports, conversions, CA store additions, binding changes with old and new thumbprint, errors)
   to the panel at the bottom and to `EasySslInstaller.log` next to the executable.
@@ -56,8 +63,12 @@ binding'leri yeni sertifikaya geçiren küçük bir araç. Kurulum yok; tek bir 
 `EasySslInstaller.exe`.
 
 - PFX veya PEM bundle (crt + key + ca-bundle) yükler. PEM dönüşümü `certutil` ile yapılır, OpenSSL gerekmez.
+- Sağlayıcıdan gelen ZIP'i olduğu gibi yükler: içinde PFX varsa onu, yoksa sunucu sertifikası, anahtar ve CA
+  dosyalarını içeriğinden tanıyarak alır. ZIP'te anahtar yoksa "Anahtar (.key)" alanındaki dosya kullanılır.
+- Her yüklemeden sonra yeni sertifikaya uyan binding'leri bulur (SAN'daki alan adları ya da aynı alan adları için
+  verilmiş eski sertifikayı kullanan binding'ler), listeler ve tek onayla hepsine atar.
 - Üstte binding'ler, altta sertifikalar; 30 günden az kalanlar sarı, süresi dolanlar kırmızı.
-- Birden fazla binding seçip tek seferde yeni sertifikayı atayabilirsiniz.
+- Birden fazla binding seçip tek seferde yeni sertifikayı elle de atayabilirsiniz.
 - Sağ tık: thumbprint kopyala, sertifikayı sil (bir binding kullanıyorsa silmez).
 - Her işlem alttaki kayıt paneline ve exe'nin yanındaki `EasySslInstaller.log` dosyasına yazılır.
 
