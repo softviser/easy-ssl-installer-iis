@@ -12,8 +12,8 @@ using System.Management.Automation.Runspaces;
 [assembly: AssemblyDescription("Install SSL certificates and update HTTPS bindings on IIS")]
 [assembly: AssemblyCompany("Softviser Yazılım")]
 [assembly: AssemblyCopyright("Copyright (c) 2026 Softviser Yazılım. MIT License.")]
-[assembly: AssemblyVersion("1.3.0.0")]
-[assembly: AssemblyFileVersion("1.3.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
 
 static class Program
 {

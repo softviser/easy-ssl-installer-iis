@@ -8,6 +8,7 @@ self-contained `EasySslInstaller.exe`. Works on any Windows or Windows Server wi
 
 ## What it does
 
+- Asks for the language at startup: English (default, Enter) or Turkish.
 - Lists every IIS site with all its http and https bindings: site state, host name, bound certificate, expiry, days
   left and an SSL status per row: valid, N days left, expired, certificate missing, host name not covered by the
   certificate, or no HTTPS at all. The status bar sums it up (sites, host names, problem bindings, hosts without HTTPS)
@@ -70,6 +71,7 @@ IIS üzerine SSL sertifikası yükleyen, mevcut sertifikaları ve HTTPS binding'
 binding'leri yeni sertifikaya geçiren küçük bir araç. Kurulum yok; tek bir PowerShell betiği ve onu gömülü taşıyan
 `EasySslInstaller.exe`.
 
+- Açılışta dil sorulur: İngilizce (varsayılan) veya Türkçe.
 - PFX veya PEM bundle (crt + key + ca-bundle) yükler. PEM dönüşümü `certutil` ile yapılır, OpenSSL gerekmez.
 - Sağlayıcıdan gelen ZIP'i olduğu gibi yükler: içinde PFX varsa onu, yoksa sunucu sertifikası, anahtar ve CA
   dosyalarını içeriğinden tanıyarak alır. ZIP'te anahtar yoksa "Anahtar (.key)" alanındaki dosya kullanılır.
